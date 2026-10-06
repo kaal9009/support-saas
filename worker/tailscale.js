@@ -34,14 +34,17 @@ async function getAccessToken(env) {
   return cachedToken.token;
 }
 
-// Mints a single-use (reusable: false), non-ephemeral auth key tagged for this
-// buyer, so the device shows up pre-authorized and taggable in the tailnet
-// admin console (each buyer's clients are findable by their tag:buyer-<id>).
+// Mints a single-use (reusable: false), non-ephemeral auth key tagged
+// "tag:buyer", so the device shows up pre-authorized in the tailnet admin
+// console. (Tailscale's tagOwners keys must be literal tag names — wildcards
+// like "tag:buyer-*" aren't allowed — so every buyer's clients share this one
+// tag rather than a per-buyer tag:buyer-<id>; which buyer a device belongs to
+// is still recorded in the key's description and in our own D1 database.)
 // expirySeconds is short (default 1 hour) — the key is only meant to be used
 // once, immediately, by the installer that was just downloaded.
 export async function createClientAuthKey(env, { buyerId, clientId, expirySeconds = 3600 }) {
   const tailnet = env.TS_TAILNET || "-";
-  const tag = buyerTag(buyerId);
+  const tag = buyerTag();
   const token = await getAccessToken(env);
 
   const res = await fetch(`https://api.tailscale.com/api/v2/tailnet/${encodeURIComponent(tailnet)}/keys`, {
@@ -69,7 +72,7 @@ export async function createClientAuthKey(env, { buyerId, clientId, expirySecond
   return data.key; // the tskey-auth-... string to hand to `tailscale up`
 }
 
-export function buyerTag(buyerId) {
-  // Tailscale tags must be lowercase alnum/dash; buyer ids are already that (randomToken hex).
-  return `tag:buyer-${buyerId}`;
+export function buyerTag() {
+  // Single shared tag — see the note on createClientAuthKey above for why.
+  return "tag:buyer";
 }

@@ -79,13 +79,17 @@ this product** — never Rohit's personal remote-support-kit tailnet.
    (write). Note the Client ID and Client Secret it shows you (the secret
    is shown once).
 3. Same admin console → **Access controls** (the ACL editor) — add a tag
-   owner so the OAuth client is allowed to create keys under
-   `tag:buyer-*`. Minimal ACL addition:
+   owner so the OAuth client is allowed to create keys under `tag:buyer`.
+   (Tailscale's `tagOwners` keys must be literal tag names — a wildcard like
+   `tag:buyer-*` isn't allowed — so every buyer's clients share this one tag;
+   which buyer a device belongs to is tracked in our own database, not in the
+   tag.) Minimal ACL addition:
    ```
    "tagOwners": {
-     "tag:buyer-*": ["autogroup:admin"]
+     "tag:buyer": ["autogroup:admin"]
    }
    ```
+   This step is already done for the live `cop3001@pm.me` tailnet.
 4. In the Cloudflare dashboard for this Worker (Settings → Variables and
    secrets → Add variable, type **Secret**), add:
    - `TS_OAUTH_CLIENT_ID` → the Client ID from step 2
