@@ -588,9 +588,18 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, 
     "if (Test-Path $rdExe) {",
     "  Start-Sleep -Seconds 3",
     `  & "$rdExe" --password ${rdPassword} 2>$null | Out-Null`,
-    "  Start-Sleep -Seconds 2",
-    '  $rdId = ((& "$rdExe" --get-id) | Select-Object -Last 1).Trim()',
-    '  Write-Host "RustDesk ready."',
+    // A fresh install needs a moment to contact RustDesk's rendezvous
+    // server and get assigned a permanent ID — a fixed 2s wait was too
+    // short on a real test run (password saved fine, ID came back empty).
+    // Poll for up to ~20s instead of a single fixed sleep.
+    "  for ($i = 1; $i -le 10; $i++) {",
+    "    Start-Sleep -Seconds 2",
+    '    $rdId = ((& "$rdExe" --get-id) | Select-Object -Last 1).Trim()',
+    "    if ($rdId -and $rdId -match '^[0-9]+$') { break }",
+    "    $rdId = $null",
+    "  }",
+    '  if ($rdId) { Write-Host "RustDesk ready (ID: $rdId)." }',
+    '  else { Write-Host "RustDesk installed but no ID yet — it may appear a little later; SSH/Tailscale still work now." }',
     "}",
     "try {",
     "  $report = @{ tailscale_ip = $tsIp; rustdesk_id = $rdId; rustdesk_password = \"" + rdPassword + "\" } | ConvertTo-Json -Compress",
