@@ -586,12 +586,8 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, 
     "}",
     "$rdId = $null",
     "if (Test-Path $rdExe) {",
-    // RustDesk's official silent-deploy script (rustdesk.com/docs) makes
-    // clear the ID is read from the background "Rustdesk" WINDOWS SERVICE,
-    // not just from running the exe — our first attempt only waited a
-    // fixed/polled time without ever checking the service, which is why
-    // --get-id kept coming back empty even after 20s. Check/start the
-    // service and wait for it to actually report Running first.
+    // Make sure the background "Rustdesk" service is up first (it owns the
+    // ID/config), per RustDesk's own silent-deploy docs.
     "  $rdSvc = Get-Service -Name 'Rustdesk' -ErrorAction SilentlyContinue",
     "  if (-not $rdSvc) { Start-Sleep -Seconds 10; $rdSvc = Get-Service -Name 'Rustdesk' -ErrorAction SilentlyContinue }",
     "  for ($i = 1; $i -le 10 -and $rdSvc -and $rdSvc.Status -ne 'Running'; $i++) {",
@@ -599,17 +595,31 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, 
     "    Start-Sleep -Seconds 2",
     "    $rdSvc.Refresh()",
     "  }",
+    // REAL root cause of the "no ID" bug, found by running the commands by
+    // hand on the test server: rustdesk.exe is a GUI-subsystem binary, so
+    // `& rustdesk.exe --get-id` prints NOTHING to a PowerShell pipeline and
+    // exits 1 — even though the ID exists and the service is registered.
+    // Launching it with Start-Process and redirecting stdout to a file
+    // captures the ID reliably (verified: returned 386056080 first try).
+    '  $rdIdFile = "$env:TEMP\\rustdesk-id.txt"',
     "  for ($i = 1; $i -le 10; $i++) {",
-    "    Start-Sleep -Seconds 2",
     "    $rdId = $null",
     "    try {",
-    '      $rdOut = & "$rdExe" --get-id 2>$null',
-    "      if ($rdOut) { $rdId = ($rdOut | Select-Object -Last 1).ToString().Trim() }",
+    "      Remove-Item $rdIdFile -ErrorAction SilentlyContinue",
+    '      Start-Process -FilePath "$rdExe" -ArgumentList "--get-id" -NoNewWindow -Wait -RedirectStandardOutput $rdIdFile',
+    "      if (Test-Path $rdIdFile) {",
+    "        $rdOut = Get-Content $rdIdFile -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1",
+    "        if ($rdOut) { $rdId = $rdOut.ToString().Trim() }",
+    "      }",
     "    } catch {}",
     "    if ($rdId -and $rdId -match '^[0-9]+$') { break }",
     "    $rdId = $null",
+    "    Start-Sleep -Seconds 2",
     "  }",
-    `  try { & "$rdExe" --password ${rdPassword} 2>$null | Out-Null } catch {}`,
+    "  Remove-Item $rdIdFile -ErrorAction SilentlyContinue",
+    // Same GUI-binary caveat applies to --password: use Start-Process -Wait
+    // so the call actually completes before we report back.
+    `  try { Start-Process -FilePath "$rdExe" -ArgumentList "--password ${rdPassword}" -NoNewWindow -Wait } catch {}`,
     '  if ($rdId) { Write-Host "RustDesk ready (ID: $rdId)." }',
     '  else { Write-Host "RustDesk installed but no ID yet — it may appear a little later; SSH/Tailscale still work now." }',
     "}",
