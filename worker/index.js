@@ -1,6 +1,7 @@
 import { hashPassword, verifyPassword, randomInstallCode, randomTempPassword, randomToken } from "./crypto.js";
 import { createSession, sessionCookie, clearSessionCookie, readSessionToken, requireSession, destroySession } from "./session.js";
 import { createClientAuthKey } from "./tailscale.js";
+import { sendTempPasswordEmail } from "./email.js";
 
 const json = (data, init = {}) =>
   new Response(JSON.stringify(data), {
@@ -62,8 +63,44 @@ export default {
           .bind(id, email, business_name, hash, salt)
           .run();
 
-        // Temp password is returned ONCE, here, to the admin — never stored in plaintext, never emailed by this API.
-        return json({ ok: true, buyer: { id, email, business_name }, temp_password: tempPassword });
+        // Temp password is returned ONCE, here, to the admin — never stored in plaintext.
+        // Best-effort email too (no-op if RESEND_API_KEY isn't set — see worker/email.js):
+        // doesn't block or fail the response either way, since the admin panel is the
+        // fallback source of truth for the temp password.
+        const emailResult = await sendTempPasswordEmail(env, {
+          to: email,
+          businessName: business_name,
+          tempPassword,
+          loginUrl: `${url.origin}/buyer/`,
+        });
+        return json({
+          ok: true,
+          buyer: { id, email, business_name },
+          temp_password: tempPassword,
+          email_sent: emailResult.sent,
+        });
+      }
+
+      if (path.match(/^\/api\/admin\/buyers\/[^/]+$/) && request.method === "DELETE") {
+        const admin = await requireSession(request, db, "admin");
+        if (!admin) return bad("Not logged in", 401);
+        const buyerId = path.split("/")[4];
+        const buyer = await db.prepare("SELECT id FROM buyers WHERE id = ?").bind(buyerId).first();
+        if (!buyer) return bad("Buyer not found", 404);
+
+        // No DB-enforced cascade — clean up dependents manually, then the buyer itself.
+        const { results: clientRows } = await db
+          .prepare("SELECT id FROM clients WHERE buyer_id = ?")
+          .bind(buyerId)
+          .all();
+        for (const c of clientRows) {
+          await db.prepare("DELETE FROM install_codes WHERE client_id = ?").bind(c.id).run();
+          await db.prepare("DELETE FROM support_escalations WHERE client_id = ?").bind(c.id).run();
+        }
+        await db.prepare("DELETE FROM clients WHERE buyer_id = ?").bind(buyerId).run();
+        await db.prepare("DELETE FROM sessions WHERE subject_type = 'buyer' AND subject_id = ?").bind(buyerId).run();
+        await db.prepare("DELETE FROM buyers WHERE id = ?").bind(buyerId).run();
+        return json({ ok: true });
       }
 
       // ---------- Admin: view all clients across all buyers ----------

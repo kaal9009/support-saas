@@ -24,6 +24,7 @@
     <div id="tempBox" style="display:none">
       <p class="sub">Temporary password (shown once — copy it now and send it to the buyer):</p>
       <div class="code" id="tempPw" style="font-size:16px"></div>
+      <p class="sub" id="emailStatus" style="margin-top:8px"></p>
     </div>
   </div>
 
@@ -39,7 +40,7 @@
   <div class="card">
     <h2 style="margin-top:0">All buyers &amp; clients</h2>
     <table id="buyersTable">
-      <thead><tr><th>Business</th><th>Email</th><th>Status</th><th>Added</th></tr></thead>
+      <thead><tr><th>Business</th><th>Email</th><th>Status</th><th>Added</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <h3>Clients (across all buyers)</h3>
@@ -64,9 +65,18 @@
     for (const b of buyers) {
       const tr = document.createElement('tr');
       tr.innerHTML = `<td>${escapeHtml(b.business_name)}</td><td>${escapeHtml(b.email)}</td>
-        <td><span class="pill">${escapeHtml(b.status)}</span></td><td>${new Date(b.created_at).toLocaleDateString()}</td>`;
+        <td><span class="pill">${escapeHtml(b.status)}</span></td><td>${new Date(b.created_at).toLocaleDateString()}</td>
+        <td><button class="secondary" style="width:auto;margin:0;padding:6px 12px" data-id="${b.id}" data-name="${escapeHtml(b.business_name)}">Delete</button></td>`;
       tbody.appendChild(tr);
     }
+    tbody.querySelectorAll('button').forEach((btn) => {
+      btn.onclick = async () => {
+        if (!confirm(`Delete buyer "${btn.dataset.name}" and all their clients/codes? This can't be undone.`)) return;
+        await fetch('/api/admin/buyers/' + btn.dataset.id, { method: 'DELETE' });
+        loadBuyers();
+        loadClients();
+      };
+    });
   }
 
   async function loadClients() {
@@ -117,6 +127,9 @@
     if (!res.ok) { err.textContent = data.error || 'Could not create buyer'; return; }
     document.getElementById('tempBox').style.display = 'block';
     document.getElementById('tempPw').textContent = data.temp_password;
+    document.getElementById('emailStatus').textContent = data.email_sent
+      ? 'Also emailed to the buyer.'
+      : 'Not emailed (email delivery isn’t set up yet) — send it to them yourself.';
     document.getElementById('email').value = '';
     document.getElementById('bizname').value = '';
     loadBuyers();

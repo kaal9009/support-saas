@@ -102,11 +102,32 @@ this product** — never Rohit's personal remote-support-kit tailnet.
 Once this is done, every client install mints its own one-time Tailscale
 key automatically — nothing else to configure per buyer or per client.
 
+## Email setup — buyer temp passwords (optional, do this once)
+
+By default the admin panel still just shows a new buyer's temp password
+once, for you to copy-paste yourself — nothing breaks if you skip this.
+To have it emailed to the buyer automatically too:
+
+1. Create a free account at https://resend.com.
+2. Settings → API Keys → Create API Key. Copy it (shown once).
+3. In the Cloudflare dashboard for this Worker (Settings → Variables and
+   secrets → Add variable, type **Secret**), add:
+   - `RESEND_API_KEY` → the key from step 2
+4. Optional: verify your own sending domain in Resend (Domains → Add
+   Domain), then add a second secret `RESEND_FROM` → e.g.
+   `Support SaaS <onboarding@yourdomain.com>`. Without this, email sends
+   from Resend's own `onboarding@resend.dev`, which only actually delivers
+   to the email address your Resend account itself is signed up with — fine
+   for testing, not for real buyers.
+
+Once `RESEND_API_KEY` is set, every new buyer account also gets emailed
+their login link, email, and temp password automatically.
+
 ## Still pending after that
 
 1. Buy the real domain, point it at this Worker (`wrangler.toml` → routes).
-2. Add email delivery for the buyer's temp password (currently shown once
-   in the admin panel — you copy-paste it yourself).
-3. Walk the full flow yourself end to end (create buyer → buyer sets SSH
+2. Walk the full flow yourself end to end (create buyer → buyer sets SSH
    key → adds client → generates code → client installs) — only admin
-   login has been tested so far.
+   login has been tested so far; the backend chain itself (code → consent
+   → Tailscale key → installer) has been verified working via direct API
+   calls, but no one has run the installer on an actual Windows machine yet.
