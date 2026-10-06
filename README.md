@@ -29,11 +29,10 @@ are not part of this resold product — a tool other people buy and silently
 install on strangers' machines cannot include password-removal or hidden
 accounts without becoming a backdoor. See the project memory file for why.
 
-The Phase-1 installer script (`buildInstallerScript` in `worker/index.js`) is
-currently a **placeholder** — it explains what Phase 2 replaces it with
-(per-buyer Tailscale provisioning for real SSH remote-support, built the
-same safe way as the existing `QUICK-INSTALL.bat`: random password per
-install, no shared secrets).
+`buildInstallerScript` in `worker/index.js` now builds a real installer:
+OpenSSH Server + a freshly-minted, single-use Tailscale key tagged for that
+buyer, using that buyer's own SSH public key (never Rohit's). See "Phase 2
+setup" below to finish wiring this up.
 
 ## One-time setup
 
@@ -67,11 +66,43 @@ npm run deploy
 This gives you a `https://support-saas.<your-subdomain>.workers.dev` URL.
 Open `/admin` and log in with the admin account you just seeded.
 
-## Phase 2 (after this is tested and you're ready to launch)
+## Phase 2 setup — Tailscale provisioning (do this once)
+
+Real per-client Tailscale keys now need a **dedicated Tailscale account for
+this product** — never Rohit's personal remote-support-kit tailnet.
+
+1. Go to https://login.tailscale.com/start and create a new account (use
+   the same `cop5001@pm.me` identity used for Cloudflare, or any email you
+   want this product's tailnet under — just not your personal one).
+2. In that tailnet's admin console → **Settings → OAuth clients → Generate
+   OAuth client**. Scopes: `Devices Core` (read+write) and `Auth Keys`
+   (write). Note the Client ID and Client Secret it shows you (the secret
+   is shown once).
+3. Same admin console → **Access controls** (the ACL editor) — add a tag
+   owner so the OAuth client is allowed to create keys under
+   `tag:buyer-*`. Minimal ACL addition:
+   ```
+   "tagOwners": {
+     "tag:buyer-*": ["autogroup:admin"]
+   }
+   ```
+4. In the Cloudflare dashboard for this Worker (Settings → Variables and
+   secrets → Add variable, type **Secret**), add:
+   - `TS_OAUTH_CLIENT_ID` → the Client ID from step 2
+   - `TS_OAUTH_CLIENT_SECRET` → the Client Secret from step 2
+   - `TS_TAILNET` → `-`
+5. Have each buyer paste their own SSH public key into their dashboard
+   (Buyer Dashboard → "Your SSH key") before they generate any install
+   codes — codes won't download an installer until that's set.
+
+Once this is done, every client install mints its own one-time Tailscale
+key automatically — nothing else to configure per buyer or per client.
+
+## Still pending after that
 
 1. Buy the real domain, point it at this Worker (`wrangler.toml` → routes).
-2. Wire real Tailscale provisioning into `buildInstallerScript()` — each
-   buyer gets their own Tailscale tag so their clients are isolated from
-   every other buyer's.
-3. Add email delivery for the buyer's temp password (currently shown once
+2. Add email delivery for the buyer's temp password (currently shown once
    in the admin panel — you copy-paste it yourself).
+3. Walk the full flow yourself end to end (create buyer → buyer sets SSH
+   key → adds client → generates code → client installs) — only admin
+   login has been tested so far.

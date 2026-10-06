@@ -1,5 +1,6 @@
 import { hashPassword, verifyPassword, randomInstallCode, randomTempPassword, randomToken } from "./crypto.js";
 import { createSession, sessionCookie, clearSessionCookie, readSessionToken, requireSession, destroySession } from "./session.js";
+import { createClientAuthKey } from "./tailscale.js";
 
 const json = (data, init = {}) =>
   new Response(JSON.stringify(data), {
@@ -141,10 +142,27 @@ export default {
         const session = await requireSession(request, db, "buyer");
         if (!session) return bad("Not logged in", 401);
         const buyer = await db
-          .prepare("SELECT id, email, business_name, must_reset_password FROM buyers WHERE id = ?")
+          .prepare("SELECT id, email, business_name, must_reset_password, ssh_public_key FROM buyers WHERE id = ?")
           .bind(session.subject_id)
           .first();
         return json({ buyer });
+      }
+
+      // Buyer sets the SSH public key that gets embedded into every one of
+      // their clients' install scripts. Required before they can generate a
+      // code that actually works (see /api/install/.../download below) —
+      // this is deliberately never Rohit's own personal key.
+      if (path === "/api/buyer/ssh-key" && request.method === "POST") {
+        const session = await requireSession(request, db, "buyer");
+        if (!session) return bad("Not logged in", 401);
+        const { ssh_public_key } = await request.json();
+        const key = (ssh_public_key || "").trim();
+        if (!key) return bad("ssh_public_key is required");
+        if (!/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-\S+)\s+\S+/.test(key)) {
+          return bad("That doesn't look like a valid SSH public key (should start with ssh-ed25519, ssh-rsa, etc.)");
+        }
+        await db.prepare("UPDATE buyers SET ssh_public_key = ? WHERE id = ?").bind(key, session.subject_id).run();
+        return json({ ok: true });
       }
 
       // ---------- Buyer: clients ----------
@@ -238,13 +256,33 @@ export default {
         if (row.used_at) return bad("This code has already been used", 410);
         if (new Date(row.expires_at) < new Date()) return bad("This code has expired", 410);
 
+        const buyer = await db.prepare("SELECT ssh_public_key FROM buyers WHERE id = ?").bind(row.buyer_id).first();
+        if (!buyer || !buyer.ssh_public_key) {
+          return bad("This technician hasn't finished setup yet (missing SSH key) — ask them to check their dashboard", 409);
+        }
+
+        let authkey;
+        try {
+          authkey = await createClientAuthKey(env, { buyerId: row.buyer_id, clientId: row.client_id });
+        } catch (err) {
+          // Tailscale secrets not configured yet, or the API call failed — fail
+          // loudly instead of handing out a broken installer.
+          return bad(`Could not provision a connection key: ${err.message}`, 502);
+        }
+
         await db
           .prepare("UPDATE install_codes SET used_at = datetime('now') WHERE code = ?")
           .bind(code)
           .run();
         await db.prepare("UPDATE clients SET status = 'awaiting_connection' WHERE id = ?").bind(row.client_id).run();
 
-        const script = buildInstallerScript({ code, clientId: row.client_id, buyerId: row.buyer_id });
+        const script = buildInstallerScript({
+          code,
+          clientId: row.client_id,
+          buyerId: row.buyer_id,
+          authkey,
+          sshPublicKey: buyer.ssh_public_key,
+        });
         return new Response(script, {
           headers: {
             "content-type": "application/octet-stream",
@@ -267,31 +305,87 @@ export default {
   },
 };
 
-// Phase-1 installer: plain remote-support agent only.
+// Phase 2 installer: real SSH + Tailscale agent, using a freshly-minted,
+// single-use Tailscale auth key (tagged for this buyer) and that buyer's own
+// SSH public key — never Rohit's personal key, never a shared/static one.
+//
 // Deliberately does NOT touch the client's Windows password, does NOT create a
 // hidden admin account, and does NOT enable silent auto-login — those stay
 // Rohit's own personal-dashboard-only recovery tools and are never shipped in
-// anything a reseller hands to a third party.
-function buildInstallerScript({ code, clientId, buyerId }) {
+// anything a reseller hands to a third party. (See PROJECT_STATE.md / memory
+// "Hard safety constraint" — do not re-add without asking again.)
+function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey }) {
+  // The PowerShell body is passed to the client as a single -EncodedCommand
+  // (Base64 of UTF-16LE), NOT written out via batch `echo` lines — batch
+  // quoting/escaping of a multi-line script full of $, (), |, & is exactly
+  // the kind of fragility that broke the personal kit's packaging before
+  // (see remote-support-kit memory). -EncodedCommand sidesteps all of that:
+  // no escaping, no quoting, nothing for cmd.exe to misinterpret.
+  const pubKey = sshPublicKey.trim();
+  const ps1 = [
+    '$ErrorActionPreference = "Stop"',
+    'Write-Host "============================================"',
+    'Write-Host "  Setting up your remote support connection"',
+    'Write-Host "============================================"',
+    'Write-Host "Installing OpenSSH Server..."',
+    "if (-not (Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Where-Object State -eq Installed)) { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null }",
+    "Set-Service -Name sshd -StartupType Automatic",
+    "Start-Service sshd -ErrorAction SilentlyContinue",
+    '$sshdConfig = "$env:ProgramData\\ssh\\sshd_config"',
+    "if (Test-Path $sshdConfig) { (Get-Content $sshdConfig) -replace '^#?StrictModes.*', 'StrictModes no' | Set-Content $sshdConfig; Restart-Service sshd -ErrorAction SilentlyContinue }",
+    `$pubKey = "${pubKey.replace(/"/g, '`"')}"`,
+    '$adminKeys = "$env:ProgramData\\ssh\\administrators_authorized_keys"',
+    "Set-Content -Path $adminKeys -Value $pubKey -Encoding ASCII -Force",
+    'icacls $adminKeys /inheritance:r | Out-Null',
+    'icacls $adminKeys /grant "SYSTEM:F" "Administrators:F" | Out-Null',
+    '$userSsh = "$env:USERPROFILE\\.ssh"',
+    "New-Item -ItemType Directory -Path $userSsh -Force | Out-Null",
+    'Set-Content -Path "$userSsh\\authorized_keys" -Value $pubKey -Encoding ASCII -Force',
+    'Write-Host "SSH ready. Installing Tailscale..."',
+    '$tsExe = "$env:ProgramFiles\\Tailscale\\tailscale.exe"',
+    "if (-not (Test-Path $tsExe)) {",
+    "  try { winget install --id Tailscale.Tailscale -e --silent --accept-source-agreements --accept-package-agreements } catch {}",
+    "  if (-not (Test-Path $tsExe)) {",
+    '    Write-Host "winget unavailable, downloading Tailscale directly..."',
+    '    $msi = "$env:TEMP\\tailscale-setup.exe"',
+    '    Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $msi -UseBasicParsing',
+    '    Start-Process -FilePath $msi -ArgumentList "/quiet" -Wait',
+    "  }",
+    "}",
+    "Start-Sleep -Seconds 3",
+    `& "$tsExe" up --authkey="${authkey}" --hostname="support-${clientId}" --accept-routes --unattended | Out-Null`,
+    'Write-Host ""',
+    'Write-Host "All set - your technician can now connect to help you."',
+    'Write-Host "This window will close in 10 seconds."',
+    "Start-Sleep -Seconds 10",
+  ].join("\r\n");
+
+  const encodedCommand = toPowerShellEncodedCommand(ps1);
+
   return `@echo off
-:: Remote support setup — code ${code}
-:: This installs a support agent (SSH + Tailscale) so a technician can connect
-:: to help you. It does NOT change your Windows login password and does NOT
-:: create any new account on this PC. You can remove it at any time.
+:: Remote support setup - code ${code}. Installs OpenSSH + Tailscale only.
+:: Does NOT change your Windows login password or create any new account.
 setlocal
-
-echo ============================================
-echo   Setting up your remote support connection
-echo ============================================
-echo Client reference: ${clientId}
-
-:: TODO (Phase 2): fetch this client's assigned Tailscale key from the backend
-:: at install time, scoped to buyer ${buyerId}'s tag, instead of embedding one
-:: statically here.
-
-echo.
-echo This is a placeholder installer — Phase 2 wires in real per-buyer
-echo Tailscale provisioning. See README.md "Phase 2" section.
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+  echo Requesting administrator access...
+  powershell -Command "Start-Process '%~f0' -Verb RunAs"
+  exit /b
+)
+powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}
 pause
 `;
+}
+
+// PowerShell's -EncodedCommand expects Base64 of the script in UTF-16LE.
+function toPowerShellEncodedCommand(script) {
+  const bytes = new Uint8Array(script.length * 2);
+  for (let i = 0; i < script.length; i++) {
+    const code = script.charCodeAt(i);
+    bytes[i * 2] = code & 0xff;
+    bytes[i * 2 + 1] = code >> 8;
+  }
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }

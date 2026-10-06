@@ -13,6 +13,16 @@
     <a href="#" id="logout">Log out</a>
   </div>
 
+  <div class="card" id="sshCard" style="margin-bottom:20px;display:none">
+    <h2 style="margin:0">Your SSH key (one-time setup)</h2>
+    <p class="sub" style="margin:4px 0 12px">Every client install gets this public key so only <em>you</em> can connect to them — paste your own, never share a key with another technician. Don't have one? Generate it on your PC first: <code>ssh-keygen -t ed25519</code>, then paste the contents of the <code>.pub</code> file below.</p>
+    <label>SSH public key</label>
+    <textarea id="sshKey" rows="3" style="width:100%;font-family:monospace;font-size:13px" placeholder="ssh-ed25519 AAAA... you@yourpc"></textarea>
+    <div class="err" id="sshErr"></div>
+    <button class="primary" id="saveSshKey" style="margin-top:8px">Save key</button>
+    <span id="sshSaved" style="display:none;color:#2a9d57;margin-left:10px">Saved ✓</span>
+  </div>
+
   <div class="card" style="margin-bottom:20px">
     <div class="row">
       <div>
@@ -46,8 +56,25 @@
     const { buyer } = await res.json();
     if (buyer.must_reset_password) { location.href = '/buyer/reset-password.html'; return null; }
     document.getElementById('brand').textContent = buyer.business_name;
+    document.getElementById('sshCard').style.display = 'block';
+    if (buyer.ssh_public_key) document.getElementById('sshKey').value = buyer.ssh_public_key;
     return buyer;
   }
+
+  document.getElementById('saveSshKey').onclick = async () => {
+    const ssh_public_key = document.getElementById('sshKey').value.trim();
+    const err = document.getElementById('sshErr');
+    const saved = document.getElementById('sshSaved');
+    err.textContent = ''; saved.style.display = 'none';
+    const res = await fetch('/api/buyer/ssh-key', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ssh_public_key })
+    });
+    const data = await res.json();
+    if (!res.ok) { err.textContent = data.error || 'Could not save key'; return; }
+    saved.style.display = 'inline';
+    setTimeout(() => saved.style.display = 'none', 3000);
+  };
 
   async function loadClients() {
     const res = await fetch('/api/buyer/clients');
@@ -66,6 +93,7 @@
     const label = document.getElementById('label').value.trim();
     const err = document.getElementById('err');
     err.textContent = '';
+    if (!document.getElementById('sshKey').value.trim()) { err.textContent = 'Save your SSH key above first — the install won\'t work without it.'; return; }
     if (!label) { err.textContent = 'Enter a name for this client first.'; return; }
     const res = await fetch('/api/buyer/clients', {
       method: 'POST', headers: { 'content-type': 'application/json' },

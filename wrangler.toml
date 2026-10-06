@@ -12,6 +12,9 @@ binding = "DB"
 database_name = "support_saas_db"
 database_id = "6576fb82-9484-46e9-afed-0ce7bcff4dab"
 
-# Secrets (set with: wrangler secret put <NAME>):
-#   SESSION_SECRET   - random long string, used to sign session cookies
-#   TAILSCALE_API_KEY - (Phase 2) used to provision per-buyer tailnets/keys
+# Secrets — set via Cloudflare dashboard (Settings > Variables and secrets,
+# mark as "Encrypted") or `wrangler secret put <NAME>`. Never commit these.
+#   TS_OAUTH_CLIENT_ID      Tailscale OAuth client id (dedicated SaaS tailnet)
+#   TS_OAUTH_CLIENT_SECRET  Tailscale OAuth client secret (same OAuth client)
+#   TS_TAILNET              usually "-" (the OAuth client's own tailnet)
+# See README.md "Phase 2 setup" for how to create these.
