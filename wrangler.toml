@@ -10,11 +10,21 @@ compatibility_date = "2024-11-01"
 # own — stripping the code from the URL before our code ever got to decide
 # what to serve. Found via live browser testing (a real client's install
 # link broke with "Could not reach the server"). Forcing the Worker to run
-# first for /install/* lets worker/index.js's own route handle it correctly.
+# first lets worker/index.js's own routes handle things like /install/<code>
+# correctly; it already falls through to env.ASSETS.fetch(request) for
+# anything it doesn't own, so this is safe for every other path too.
+#
+# NOTE: this must be the boolean `true`, not an array of path patterns —
+# the per-path array form needs Wrangler 4, but Cloudflare's "Connect to
+# Git" build pipeline pins Wrangler 3.x (see package.json), which only
+# understands the boolean. An array here passed locally (where a newer
+# wrangler may be installed) but broke every CI deploy with "Expected
+# assets.run_worker_first to be of type boolean" — silently, since the
+# build log for that isn't shown by default in the dashboard UI.
 [assets]
 directory = "./public"
 binding = "ASSETS"
-run_worker_first = ["/install/*"]
+run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"
