@@ -12,6 +12,86 @@ const bad = (msg, status = 400) => json({ error: msg }, { status });
 
 const INSTALL_CODE_TTL_MIN = 30; // a generated code is only valid for 30 minutes if unused
 
+// Served inline for /install/<code> — see the route below for why this isn't
+// fetched from env.ASSETS. Keep this in sync with public/install/index.html
+// (same file, just inlined so the dynamic route can't get redirected).
+const INSTALL_PAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confirm Remote Support</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="card" id="card">Loading…</div>
+</div>
+<script>
+  const code = location.pathname.split('/').pop();
+
+  async function load() {
+    const card = document.getElementById('card');
+    let res, data;
+    try {
+      res = await fetch('/api/install/' + encodeURIComponent(code));
+      data = await res.json();
+    } catch (e) {
+      card.innerHTML = '<p class="err">Could not reach the server. Check your internet connection and reload.</p>';
+      return;
+    }
+    if (!res.ok) {
+      card.innerHTML = \`<h1>Can't continue</h1><p class="sub">\${escapeHtml(data.error || 'Something went wrong.')}</p>
+        <p class="sub">Ask your technician for a fresh code.</p>\`;
+      return;
+    }
+    render(data);
+  }
+
+  function render(data) {
+    const card = document.getElementById('card');
+    card.innerHTML = \`
+      <h1>Allow remote support?</h1>
+      <p class="sub"><strong>\${escapeHtml(data.business_name)}</strong> wants to connect to this PC to help you.
+      This installs a small support agent that lets them see and control this computer remotely, over an
+      encrypted connection, until the session ends. It does <strong>not</strong> change your Windows password
+      or create any new account on this PC. You can remove it at any time.</p>
+      <button class="primary" id="agree">I agree — set up support</button>
+      <button class="secondary" id="decline">Cancel</button>
+      <div class="err" id="err"></div>
+    \`;
+    document.getElementById('decline').onclick = () => { location.href = '/'; };
+    document.getElementById('agree').onclick = async () => {
+      const btn = document.getElementById('agree');
+      btn.disabled = true; btn.textContent = 'Setting up…';
+      try {
+        const res = await fetch('/api/install/' + encodeURIComponent(code) + '/consent', { method: 'POST' });
+        if (!res.ok) {
+          const d = await res.json();
+          document.getElementById('err').textContent = d.error || 'Something went wrong.';
+          btn.disabled = false; btn.textContent = 'I agree — set up support';
+          return;
+        }
+        location.href = '/api/install/' + encodeURIComponent(code) + '/download';
+        card.innerHTML = \`<h1>Downloading…</h1><p class="sub">Open the downloaded file and run it. A black window
+          will appear for a minute while it connects — you can close it once it says "Connected".</p>\`;
+      } catch (e) {
+        document.getElementById('err').textContent = 'Could not reach the server.';
+        btn.disabled = false; btn.textContent = 'I agree — set up support';
+      }
+    };
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  load();
+</script>
+</body>
+</html>
+`;
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -330,9 +410,20 @@ export default {
 
       // ---------- Static pages ----------
       // /install/<code> is a client-side page (code read from the URL by JS);
-      // always serve the same install/index.html for any code.
+      // always serve the same install page for any code.
+      //
+      // NOTE: this is served inline (not via env.ASSETS.fetch) on purpose.
+      // Cloudflare's static-asset binding canonicalizes "/install/index.html"
+      // to "/install/" and returns a redirect response for it; if that
+      // redirect is passed straight through, the browser follows it and
+      // lands on "/install/" with the code stripped from the URL, which then
+      // breaks the page (it reads the code from location.pathname). Found by
+      // live testing — a real client got "Could not reach the server" on the
+      // install page because of this.
       if (path.match(/^\/install\/[^/]+$/) && request.method === "GET") {
-        return env.ASSETS.fetch(new Request(new URL("/install/index.html", url.origin), request));
+        return new Response(INSTALL_PAGE_HTML, {
+          headers: { "content-type": "text/html; charset=UTF-8" },
+        });
       }
 
       return env.ASSETS.fetch(request);
