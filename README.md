@@ -126,8 +126,14 @@ their login link, email, and temp password automatically.
 ## Still pending after that
 
 1. Buy the real domain, point it at this Worker (`wrangler.toml` → routes).
-2. Walk the full flow yourself end to end (create buyer → buyer sets SSH
-   key → adds client → generates code → client installs) — only admin
-   login has been tested so far; the backend chain itself (code → consent
-   → Tailscale key → installer) has been verified working via direct API
-   calls, but no one has run the installer on an actual Windows machine yet.
+
+The full flow (create buyer → buyer sets SSH key → adds client → generates
+code → client visits the link, accepts consent, downloads and runs the
+installer) has been run end to end on a real Windows Server and confirmed
+working — the device shows up tagged `tag:buyer` in the Tailscale admin
+console. Along the way this also caught a real bug: Cloudflare's
+static-asset binding was intercepting `/install/<code>` and redirecting it
+to `/install/` before the Worker ever ran, stripping the code from the URL.
+Fixed by serving that page inline from the Worker and adding
+`run_worker_first = ["/install/*"]` to `wrangler.toml` — see the commit
+history for details if this area needs touching again.
