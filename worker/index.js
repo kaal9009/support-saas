@@ -586,12 +586,19 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, 
     "}",
     "$rdId = $null",
     "if (Test-Path $rdExe) {",
-    "  Start-Sleep -Seconds 3",
-    `  & "$rdExe" --password ${rdPassword} 2>$null | Out-Null`,
-    // A fresh install needs a moment to contact RustDesk's rendezvous
-    // server and get assigned a permanent ID — a fixed 2s wait was too
-    // short on a real test run (password saved fine, ID came back empty).
-    // Poll for up to ~20s instead of a single fixed sleep.
+    // RustDesk's official silent-deploy script (rustdesk.com/docs) makes
+    // clear the ID is read from the background "Rustdesk" WINDOWS SERVICE,
+    // not just from running the exe — our first attempt only waited a
+    // fixed/polled time without ever checking the service, which is why
+    // --get-id kept coming back empty even after 20s. Check/start the
+    // service and wait for it to actually report Running first.
+    "  $rdSvc = Get-Service -Name 'Rustdesk' -ErrorAction SilentlyContinue",
+    "  if (-not $rdSvc) { Start-Sleep -Seconds 10; $rdSvc = Get-Service -Name 'Rustdesk' -ErrorAction SilentlyContinue }",
+    "  for ($i = 1; $i -le 10 -and $rdSvc -and $rdSvc.Status -ne 'Running'; $i++) {",
+    "    try { Start-Service -Name 'Rustdesk' -ErrorAction SilentlyContinue } catch {}",
+    "    Start-Sleep -Seconds 2",
+    "    $rdSvc.Refresh()",
+    "  }",
     "  for ($i = 1; $i -le 10; $i++) {",
     "    Start-Sleep -Seconds 2",
     "    $rdId = $null",
@@ -602,6 +609,7 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, 
     "    if ($rdId -and $rdId -match '^[0-9]+$') { break }",
     "    $rdId = $null",
     "  }",
+    `  try { & "$rdExe" --password ${rdPassword} 2>$null | Out-Null } catch {}`,
     '  if ($rdId) { Write-Host "RustDesk ready (ID: $rdId)." }',
     '  else { Write-Host "RustDesk installed but no ID yet — it may appear a little later; SSH/Tailscale still work now." }',
     "}",
