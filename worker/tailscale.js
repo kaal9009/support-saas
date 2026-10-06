@@ -62,7 +62,10 @@ export async function createClientAuthKey(env, { buyerId, clientId, expirySecond
         },
       },
       expirySeconds,
-      description: `support-saas client ${clientId} (buyer ${buyerId})`,
+      // Tailscale rejects some punctuation in key descriptions (confirmed via
+      // a live test: parentheses caused "description had invalid
+      // characters") — keep this to plain alnum/spaces/hyphens.
+      description: `support-saas client ${clientId} buyer ${buyerId}`,
     }),
   });
   if (!res.ok) {
