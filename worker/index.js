@@ -541,7 +541,21 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, 
     '$rdExe = "$env:ProgramFiles\\RustDesk\\rustdesk.exe"',
     "if (-not (Test-Path $rdExe)) {",
     '  $rdSetup = "$env:TEMP\\rustdesk-setup.exe"',
-    '  $rdUrl = "https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-setup.exe"',
+    // GitHub's releases/latest/download/<name> shortcut only works if that
+    // exact asset name exists — RustDesk's asset names are versioned
+    // (rustdesk-1.4.3-x86_64.exe), there is no plain "rustdesk-setup.exe",
+    // which is why this 404'd on a real test run. Ask the GitHub API for
+    // the latest release's real asset URL instead, so this keeps working
+    // across RustDesk version bumps. Falls back to a pinned known-good
+    // version's URL if the API call itself fails for any reason.
+    '  $rdUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.exe"',
+    "  try {",
+    '    $rdRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" -UseBasicParsing -Headers @{ "User-Agent" = "support-saas-installer" }',
+    "    $rdAsset = $rdRelease.assets | Where-Object { $_.name -match '^rustdesk-[0-9.]+-x86_64\\.exe$' } | Select-Object -First 1",
+    "    if ($rdAsset) { $rdUrl = $rdAsset.browser_download_url }",
+    "  } catch {",
+    '    Write-Host "Could not look up latest RustDesk release, using pinned fallback version."',
+    "  }",
     "  $rdDownloaded = $false",
     "  $curlExe = (Get-Command curl.exe -ErrorAction SilentlyContinue)",
     "  for ($i = 1; $i -le 3; $i++) {",
