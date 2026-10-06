@@ -3,9 +3,18 @@ main = "worker/index.js"
 compatibility_date = "2024-11-01"
 
 # Static files (admin/buyer/install pages) served from ./public
+#
+# run_worker_first: without this, Cloudflare's static-asset layer handles
+# requests BEFORE the Worker ever runs, and for a path like /install/<code>
+# (which doesn't match any real file) it was redirecting to /install/ on its
+# own — stripping the code from the URL before our code ever got to decide
+# what to serve. Found via live browser testing (a real client's install
+# link broke with "Could not reach the server"). Forcing the Worker to run
+# first for /install/* lets worker/index.js's own route handle it correctly.
 [assets]
 directory = "./public"
 binding = "ASSETS"
+run_worker_first = ["/install/*"]
 
 [[d1_databases]]
 binding = "DB"
