@@ -184,12 +184,20 @@ export default {
       }
 
       // ---------- Admin: view all clients across all buyers ----------
+      // RustDesk connect details are only included when the buyer has
+      // actually consented (admin_support_allowed=1, set via the buyer's
+      // "Ask admin for help" button or escalation) — enforced here in the
+      // query itself, not just hidden in the UI, so the master admin can't
+      // get a buyer's client's RustDesk password just by asking the API.
       if (path === "/api/admin/clients" && request.method === "GET") {
         const admin = await requireSession(request, db, "admin");
         if (!admin) return bad("Not logged in", 401);
         const { results } = await db
           .prepare(
             `SELECT c.id, c.label, c.status, c.admin_support_allowed, c.last_seen_at,
+                    CASE WHEN c.admin_support_allowed = 1 THEN c.rustdesk_id END as rustdesk_id,
+                    CASE WHEN c.admin_support_allowed = 1 THEN c.rustdesk_password END as rustdesk_password,
+                    CASE WHEN c.admin_support_allowed = 1 THEN c.tailscale_ip END as tailscale_ip,
                     b.id as buyer_id, b.business_name, b.email as buyer_email
              FROM clients c JOIN buyers b ON b.id = c.buyer_id
              ORDER BY c.created_at DESC`
@@ -399,6 +407,7 @@ export default {
           buyerId: row.buyer_id,
           authkey,
           sshPublicKey: buyer.ssh_public_key,
+          origin: url.origin,
         });
         return new Response(script, {
           headers: {
@@ -406,6 +415,38 @@ export default {
             "content-disposition": 'attachment; filename="SUPPORT-SETUP.bat"',
           },
         });
+      }
+
+      // The installer calls this once it's done, to hand back the details it
+      // only knows AFTER running on the client's own machine: the Tailscale
+      // IP it got assigned, and the RustDesk ID + unattended password the
+      // RustDesk install generated locally (we can't mint these ourselves the
+      // way we mint the Tailscale auth key — they only exist once RustDesk
+      // has actually installed and run on that PC). No auth — same trust
+      // model as the rest of the public install flow: only works for a code
+      // that's already been downloaded (used_at set), once (checked by
+      // clearing a report_received flag... kept simple: just requires
+      // used_at to be set, same guard as everything else here).
+      if (path.match(/^\/api\/install\/[^/]+\/report$/) && request.method === "POST") {
+        const code = path.split("/")[3];
+        const row = await db.prepare("SELECT * FROM install_codes WHERE code = ?").bind(code).first();
+        if (!row) return bad("Invalid code", 404);
+        if (!row.used_at) return bad("This code hasn't been used yet", 400);
+
+        const { tailscale_ip, rustdesk_id, rustdesk_password } = await request.json();
+        await db
+          .prepare(
+            `UPDATE clients SET
+               tailscale_ip = COALESCE(?, tailscale_ip),
+               rustdesk_id = COALESCE(?, rustdesk_id),
+               rustdesk_password = COALESCE(?, rustdesk_password),
+               status = 'online',
+               last_seen_at = datetime('now')
+             WHERE id = ?`
+          )
+          .bind(tailscale_ip || null, rustdesk_id || null, rustdesk_password || null, row.client_id)
+          .run();
+        return json({ ok: true });
       }
 
       // ---------- Static pages ----------
@@ -442,7 +483,7 @@ export default {
 // Rohit's own personal-dashboard-only recovery tools and are never shipped in
 // anything a reseller hands to a third party. (See PROJECT_STATE.md / memory
 // "Hard safety constraint" — do not re-add without asking again.)
-function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey }) {
+function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey, origin }) {
   // The PowerShell body is passed to the client as a single -EncodedCommand
   // (Base64 of UTF-16LE), NOT written out via batch `echo` lines — batch
   // quoting/escaping of a multi-line script full of $, (), |, & is exactly
@@ -450,6 +491,13 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey }
   // (see remote-support-kit memory). -EncodedCommand sidesteps all of that:
   // no escaping, no quoting, nothing for cmd.exe to misinterpret.
   const pubKey = sshPublicKey.trim();
+  // RustDesk's unattended-access password — generated here (not read back
+  // from the client) so it's hex-only (0-9a-f). Deliberately avoiding
+  // randomTempPassword()'s punctuation characters: we already got bitten
+  // once by a CLI argument rejecting punctuation (Tailscale's description
+  // field and parentheses — see memory), so every value handed to a
+  // command-line tool in this installer stays plain alphanumeric on purpose.
+  const rdPassword = randomToken(8);
   const ps1 = [
     '$ErrorActionPreference = "Stop"',
     'Write-Host "============================================"',
@@ -482,6 +530,26 @@ function buildInstallerScript({ code, clientId, buyerId, authkey, sshPublicKey }
     "}",
     "Start-Sleep -Seconds 3",
     `& "$tsExe" up --authkey="${authkey}" --hostname="support-${clientId}" --accept-routes --unattended | Out-Null`,
+    "Start-Sleep -Seconds 2",
+    "$tsIp = ((& \"$tsExe\" ip -4) | Select-Object -First 1).Trim()",
+    'Write-Host "Tailscale connected. Installing RustDesk (remote screen access)..."',
+    '$rdExe = "$env:ProgramFiles\\RustDesk\\rustdesk.exe"',
+    "if (-not (Test-Path $rdExe)) {",
+    '  $rdSetup = "$env:TEMP\\rustdesk-setup.exe"',
+    '  Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-setup.exe" -OutFile $rdSetup -UseBasicParsing',
+    '  Start-Process -FilePath $rdSetup -ArgumentList "--silent-install" -Wait',
+    "}",
+    "Start-Sleep -Seconds 3",
+    `& "$rdExe" --password ${rdPassword} 2>$null | Out-Null`,
+    "Start-Sleep -Seconds 2",
+    '$rdId = ((& "$rdExe" --get-id) | Select-Object -Last 1).Trim()',
+    'Write-Host "RustDesk ready."',
+    "try {",
+    "  $report = @{ tailscale_ip = $tsIp; rustdesk_id = $rdId; rustdesk_password = \"" + rdPassword + "\" } | ConvertTo-Json -Compress",
+    `  Invoke-RestMethod -Uri "${origin}/api/install/${code}/report" -Method POST -Body $report -ContentType "application/json" -UseBasicParsing | Out-Null`,
+    "} catch {",
+    '  Write-Host "(Could not report connection details back — your technician can still connect via Tailscale/SSH.)"',
+    "}",
     'Write-Host ""',
     'Write-Host "All set - your technician can now connect to help you."',
     'Write-Host "This window will close in 10 seconds."',

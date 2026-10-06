@@ -45,7 +45,7 @@
     </table>
     <h3>Clients (across all buyers)</h3>
     <table id="clientsTable">
-      <thead><tr><th>Client</th><th>Buyer</th><th>Status</th><th>Admin access allowed?</th></tr></thead>
+      <thead><tr><th>Client</th><th>Buyer</th><th>Status</th><th>Admin access allowed?</th><th>Connect</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -86,10 +86,24 @@
     tbody.innerHTML = '';
     for (const c of clients) {
       const tr = document.createElement('tr');
+      const connectCell = c.rustdesk_id
+        ? `<button class="secondary" style="width:auto;margin:0;padding:6px 12px" data-connect="${c.id}">Connect</button>
+           <div class="sub" id="connect-${c.id}" style="display:none;margin-top:6px;font-family:monospace;font-size:12px">
+             ID: ${escapeHtml(c.rustdesk_id)}<br>Password: ${escapeHtml(c.rustdesk_password || '')}
+             ${c.tailscale_ip ? `<br>SSH: ssh administrator@${escapeHtml(c.tailscale_ip)}` : ''}
+           </div>`
+        : (c.admin_support_allowed ? `<span class="sub">Not connected yet</span>` : `<span class="sub">Buyer hasn't allowed access</span>`);
       tr.innerHTML = `<td>${escapeHtml(c.label)}</td><td>${escapeHtml(c.business_name)}</td>
-        <td><span class="pill">${escapeHtml(c.status)}</span></td><td>${c.admin_support_allowed ? 'Yes' : 'No'}</td>`;
+        <td><span class="pill">${escapeHtml(c.status)}</span></td><td>${c.admin_support_allowed ? 'Yes' : 'No'}</td>
+        <td>${connectCell}</td>`;
       tbody.appendChild(tr);
     }
+    tbody.querySelectorAll('[data-connect]').forEach((btn) => {
+      btn.onclick = () => {
+        const box = document.getElementById('connect-' + btn.dataset.connect);
+        box.style.display = box.style.display === 'none' ? 'block' : 'none';
+      };
+    });
   }
 
   async function loadEscalations() {

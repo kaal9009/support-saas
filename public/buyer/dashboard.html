@@ -43,7 +43,7 @@
   <div class="card">
     <h2>Your clients</h2>
     <table id="clientsTable">
-      <thead><tr><th>Name</th><th>Status</th><th>Added</th></tr></thead>
+      <thead><tr><th>Name</th><th>Status</th><th>Connect</th><th>Added</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <p class="sub" id="empty" style="display:none">No clients yet — add one above.</p>
@@ -84,9 +84,34 @@
     document.getElementById('empty').style.display = clients.length ? 'none' : 'block';
     for (const c of clients) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${escapeHtml(c.label)}</td><td><span class="pill">${escapeHtml(c.status)}</span></td><td>${new Date(c.created_at).toLocaleString()}</td>`;
+      const connectCell = c.rustdesk_id
+        ? `<button class="secondary" style="width:auto;margin:0;padding:6px 12px" data-connect="${c.id}">Connect</button>
+           <div class="sub" id="connect-${c.id}" style="display:none;margin-top:6px;font-family:monospace;font-size:12px">
+             ID: ${escapeHtml(c.rustdesk_id)}<br>Password: ${escapeHtml(c.rustdesk_password || '')}
+             ${c.tailscale_ip ? `<br>SSH: ssh administrator@${escapeHtml(c.tailscale_ip)}` : ''}
+           </div>`
+        : `<span class="sub">${c.status === 'pending' ? 'Not installed yet' : 'Setting up…'}</span>`;
+      tr.innerHTML = `<td>${escapeHtml(c.label)}</td><td><span class="pill">${escapeHtml(c.status)}</span></td>
+        <td>${connectCell}</td><td>${new Date(c.created_at).toLocaleString()}</td>
+        <td><button class="secondary" style="width:auto;margin:0;padding:6px 12px" data-escalate="${c.id}" data-label="${escapeHtml(c.label)}" ${c.admin_support_allowed ? 'disabled' : ''}>${c.admin_support_allowed ? 'Admin allowed ✓' : 'Ask admin for help'}</button></td>`;
       tbody.appendChild(tr);
     }
+    tbody.querySelectorAll('[data-connect]').forEach((btn) => {
+      btn.onclick = () => {
+        const box = document.getElementById('connect-' + btn.dataset.connect);
+        box.style.display = box.style.display === 'none' ? 'block' : 'none';
+      };
+    });
+    tbody.querySelectorAll('[data-escalate]').forEach((btn) => {
+      btn.onclick = async () => {
+        if (!confirm(`Ask the master admin to step in on "${btn.dataset.label}"? They'll be able to connect directly.`)) return;
+        await fetch('/api/buyer/escalate', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ client_id: btn.dataset.escalate })
+        });
+        loadClients();
+      };
+    });
   }
 
   document.getElementById('addClient').onclick = async () => {

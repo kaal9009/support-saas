@@ -31,8 +31,9 @@ accounts without becoming a backdoor. See the project memory file for why.
 
 `buildInstallerScript` in `worker/index.js` now builds a real installer:
 OpenSSH Server + a freshly-minted, single-use Tailscale key tagged for that
-buyer, using that buyer's own SSH public key (never Rohit's). See "Phase 2
-setup" below to finish wiring this up.
+buyer (using that buyer's own SSH public key, never Rohit's), **plus
+RustDesk** for actual GUI remote-desktop access (not just a terminal) — see
+"Phase 3" below.
 
 ## One-time setup
 
@@ -122,6 +123,45 @@ To have it emailed to the buyer automatically too:
 
 Once `RESEND_API_KEY` is set, every new buyer account also gets emailed
 their login link, email, and temp password automatically.
+
+## Phase 3 — RustDesk (real GUI remote desktop) + the DB migration it needs
+
+The installer now also installs RustDesk (open source, free, no per-seat
+licensing — unlike AnyDesk/TeamViewer, which matters once this is being
+resold) in unattended mode with its own generated password, and reports its
+RustDesk ID + password + Tailscale IP back to us once it's running. The
+buyer dashboard shows a "Connect" button per client with those details; the
+admin dashboard shows the same, but **only** once the buyer has clicked
+"Ask admin for help" on that client (enforced in the API query itself, not
+just hidden in the UI).
+
+**One DB migration needs to be run once, manually, before this works** —
+same as `migrations/0002_ssh_key.sql` before it (this sandbox can't reach
+the Cloudflare API directly to run it itself). In the Cloudflare dashboard →
+this D1 database → Console, run:
+
+```sql
+ALTER TABLE clients ADD COLUMN rustdesk_id TEXT;
+ALTER TABLE clients ADD COLUMN rustdesk_password TEXT;
+ALTER TABLE buyers ADD COLUMN plan TEXT NOT NULL DEFAULT 'free';
+```
+
+(Same as `migrations/0003_rustdesk.sql` in this repo.) Until this is run,
+every client install's final "report back" step will silently fail (caught
+and ignored — the installer still finishes and Tailscale/SSH still work),
+it just won't have RustDesk connect details yet.
+
+Right now RustDesk uses its own public relay servers (no setup needed,
+works immediately). Once ready, this should move to a self-hosted relay
+(`hbbs`/`hbbr` on a small Linux box — the existing Oracle Cloud account
+could host it) for a real resold product, both for reliability and so
+client traffic isn't going through a third party's shared relay.
+
+**Not yet built:** Action1 (patching/scripts/RMM) integration, and
+"self-heal" (auto-reinstall if RustDesk/Tailscale/SSH gets removed) — the
+`buyers.plan` column above exists so self-heal can be gated to a paid
+('pro') plan later, same as Rohit's personal kit, where self-heal already
+is the single most important feature.
 
 ## Still pending after that
 
